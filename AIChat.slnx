@@ -3,5 +3,6 @@
     <File Path="README.md" />
   </Folder>
   <Project Path="Chat/Chat.csproj" />
+  <Project Path="Common/Common.shproj" Id="067d8fe7-3531-4dac-874e-0004d6896849" />
   <Project Path="Ingest/Ingest.csproj" />
 </Solution>

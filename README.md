@@ -8,25 +8,29 @@ This is purely experimental project for test and research purposes.
 - The chat will call a local RAG plugin to retrieve relevant chunks from indexed `.txt` files and include that context when answering.
 
 ### Repository pieces
-- `Ingest\Program.cs` — Reads `.txt` files, splits them into overlapping chunks, generates embeddings via `OllamaApiClient`, and upserts points into a Qdrant collection (`local_embeddings` by default).
-- `Ingest\TextSplitter.cs` — Utility to split documents into `CHUNK_SIZE`/`CHUNK_OVERLAP` chunks used by the ingester.
+- `Ingest\Program.cs` — Reads `.txt` files, splits them into overlapping chunks, generates embeddings via `OpenAIClient`, and upserts points with dense and sparse vectors into a Qdrant collection (`local_embeddings` by default).
 - `Chat\RagPlugin.cs` — A Kernel plugin exposing `SearchKnowledgeBase(query)` that:
   - Vectorizes the query with the same embedding generator,
-  - Searches Qdrant (`SearchAsync`) and returns concatenated chunk contents as context.
+  - Builds a Qdrant search request,
+  - Performs hybrid search on Qdrant (`QueryAsync`) and returns concatenated chunk contents as context.
 - `Chat\Program.cs` — Console chat program:
   - Builds a Semantic Kernel and registers the `RAGPlugin`.
   - Uses `AddOpenAIChatCompletion(modelId, endpoint, apiKey)` configured to call the local Ollama endpoint as the chat LLM.
   - Streams LLM output to the console via `GetStreamingChatMessageContentsAsync`.
+- `Common\TextSplitter.cs` — Utility to split documents into `CHUNK_SIZE`/`CHUNK_OVERLAP` chunks used by the ingester.
+- `Common\Knowledgebase.cs` — Loads the knowledge base files, splits them into chunks, and provides access to the content.
 
 ### Key configuration (edit at top of `Ingest\Program.cs` and `Chat\Program.cs`)
-- `KNOWLEDGEBASE_FOLDER` — folder with `.txt` files to index (Ingest).
-- `OLLAMA_URI` — URL of your Ollama instance (embeddings + optional chat provider).
-- `EMBEDDING_MODEL` — name of the Ollama embedding model (e.g., `embeddinggemma`).
+- `KNOWLEDGEBASE_FOLDER` — folder with `.txt .md .html` files to index (Ingest).
 - `QDRANT_HOST` / `QDRANT_COLLECTION` — Qdrant host and collection name.
-- `VECTOR_DIMENSIONS`, `CHUNK_SIZE`, `CHUNK_OVERLAP`, `CHUNKS_BATCH` — ingestion tuning.
+- `OLLAMA_URI` — URL of your Ollama instance (embeddings + optional chat provider).
+- `EMBEDDING_MODEL` — name of the embedding model (e.g., `embeddinggemma`).
+- `MODEL` — name of the chat model (e.g., `gemma4:26b`).
+- `APIKEY` — optional API key.
+- `VECTOR_DIMENSIONS`, `CHUNKS_BATCH` — ingestion tuning.
 
 ### How it works
-1. Indexing: `Ingest` splits each file into overlapping chunks, calls the embedding model in batches and upserts vectors + payload (`content`, `source`) into Qdrant.
+1. Indexing: `Ingest` splits each file into overlapping chunks, calls the embedding model in batches and upserts dense and sparse vectors + payload (`content`, `source`) into Qdrant.
 2. Chat: `Chat` builds a Semantic Kernel, registers `RAGPlugin`, and runs an interactive loop:
    - User input is added to chat history.
    - Kernel/LLM is allowed to call the registered plugin automatically (per system prompt rules).

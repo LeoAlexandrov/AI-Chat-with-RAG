@@ -1,29 +1,27 @@
 ﻿using System;
+using System.ClientModel;
 using System.Collections.Generic;
-using System.IO;
 using System.Linq;
 using Microsoft.Extensions.AI;
 
-using OllamaSharp;
+using OpenAI;
 using Qdrant.Client;
 using Qdrant.Client.Grpc;
 
 
 
-// *** configuration ***
+// Configuration
 
 const string KNOWLEDGEBASE_FOLDER = @"C:\Temp\Kb";
-const string OLLAMA_URI = "http://localhost:11434/";
-const string QDRANT_HOST = "minipc.local"; // "localhost" or IP/name of the machine running Qdrant
+const string QDRANT_HOST = "minipc.local";             // "localhost" or IP/name of the machine running Qdrant
 const string QDRANT_COLLECTION = "local_embeddings";
-const string EMBEDDING_MODEL = "embeddinggemma"; // or "mxbai-embed-large" 
 
-const int VECTOR_DIMENSIONS = 768; // 768 for embeddinggemma, 1024 for mxbai-embed-large
-const int CHUNK_SIZE = 1024; // Characters per chunk
-const int CHUNK_OVERLAP = 256; // Overlap to keep context across boundaries
-const int CHUNKS_BATCH = 4; // Number of chunks to process in parallel when generating embeddings
+const string OLLAMA_URI = "http://localhost:11434/v1"; // http://localhost:8080/v1 for llama.cpp
+const string EMBEDDING_MODEL = "embeddinggemma";       // "EmbeddingGemma"; // "embeddinggemma-300M-BF16"; //"mxbai-embed-large"
+const string APIKEY = "0";
 
-var ollamaUri = new Uri(OLLAMA_URI);
+const int VECTOR_DIMENSIONS = 768;                     // 768 for embeddinggemma, 1024 for mxbai-embed-large
+const int CHUNKS_BATCH = 4;                            // Number of chunks to process in parallel when generating embeddings
 
 
 // Initialize Qdrant Client and collection
@@ -37,48 +35,52 @@ if (collections.Contains(QDRANT_COLLECTION))
 
 await qdrant.CreateCollectionAsync(
 	QDRANT_COLLECTION,
-	new VectorParams() { Size = VECTOR_DIMENSIONS, Distance = Distance.Cosine });
+	vectorsConfig: new VectorParamsMap()
+	{
+		Map = { ["dense"] = new VectorParams() { Size = VECTOR_DIMENSIONS, Distance = Distance.Cosine } }
+	},
+	sparseVectorsConfig: ("sparse", new SparseVectorParams())
+);
 
 
 // Initialize embedding generator
 
-IEmbeddingGenerator<string, Embedding<float>> embeddingGenerator = new OllamaApiClient(ollamaUri, EMBEDDING_MODEL);
+var clientOptions = new OpenAIClientOptions { Endpoint = new Uri(OLLAMA_URI) };
+var openAIClient = new OpenAIClient(new ApiKeyCredential(APIKEY), clientOptions);
+var embeddingGenerator = openAIClient.GetEmbeddingClient(EMBEDDING_MODEL).AsIEmbeddingGenerator();
 
 
-// Get list all knowledge base files
+// Load all knowledge base files
 
-var kbfiles = Directory.GetFiles(KNOWLEDGEBASE_FOLDER, "*.txt", SearchOption.AllDirectories);
-int n = kbfiles.Length;
-int current = 0;
-int i = 0;
+var kb = new KnowledgeBase(KNOWLEDGEBASE_FOLDER, ["*.txt", "*.md", "*.html"]);
+await kb.Load();
 
-// embed each file in Qdrant
 
-foreach (var kbfile in kbfiles)
+// Embed all chunks in Qdrant
+
+var chunks = kb.GetChunks();
+
+for (int i = 0; i < chunks.Count; i += CHUNKS_BATCH)
 {
-	Console.Write($"Processing file {++current}/{n}: {kbfile} ");
+	var batch = chunks.Skip(i).Take(CHUNKS_BATCH);
+	var embeddings = await embeddingGenerator.GenerateAsync(batch.Select(c => c.Content));
+	var sparseVectors = batch.Select(chunk => kb.BM25Encode(chunk.Content)).ToArray();
 
-	var text = await File.ReadAllTextAsync(kbfile);
-	var chunks = TextSplitter.Split(text, CHUNK_SIZE, CHUNK_OVERLAP);
-
-	for (int j = 0; j < chunks.Count; j += CHUNKS_BATCH)
-	{
-		var embeddings = await embeddingGenerator.GenerateAsync(chunks.Skip(j).Take(CHUNKS_BATCH));
-
-		var points = embeddings.Select((e, k) => new PointStruct()
+	var points = embeddings.Select((e, k) => new PointStruct()
 			{
-				Id = (ulong)(i + j + k),
-				Vectors = e.Vector.ToArray(),
-				Payload = { ["content"] = chunks[j + k], ["source"] = kbfile }
-			}).ToArray();
+				Id = (ulong)(i + k),
+				Vectors = new Dictionary<string, Vector>()
+				{
+					["dense"] = e.Vector.ToArray(),
+					["sparse"] = (sparseVectors[k].Values, sparseVectors[k].Indices)
+				},
+				Payload = { ["content"] = chunks[i + k].Content, ["source"] = chunks[i + k].SourceFile }
+			})
+		.ToArray();
 
-		await qdrant.UpsertAsync(QDRANT_COLLECTION, points);
+	await qdrant.UpsertAsync(QDRANT_COLLECTION, points);
 
-		Console.Write(".");
-	}
-
-	i+= chunks.Count;
-	Console.WriteLine(" done.");
+	Console.Write(".");
 }
 
 

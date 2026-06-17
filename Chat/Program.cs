@@ -1,10 +1,14 @@
 ﻿using System;
+using System.ClientModel;
+using System.Collections.Generic;
+using System.Linq;
 using System.Text;
+using Microsoft.Extensions.AI;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
 using Microsoft.SemanticKernel.Connectors.OpenAI;
 
-using OllamaSharp;
+using OpenAI;
 using Qdrant.Client;
 
 
@@ -17,39 +21,48 @@ Console.OutputEncoding = Encoding.UTF8;
 
 // *** configuration ***
 
-const string OLLAMA_URI = "http://localhost:11434/";
-const string QDRANT_HOST = "minipc.local"; // "localhost" or IP/name of the machine running Qdrant
+const string KNOWLEDGEBASE_FOLDER = @"C:\Temp\Kb";
+const string QDRANT_HOST = "minipc.local";             // "localhost" or IP/name of the machine running Qdrant
 const string QDRANT_COLLECTION = "local_embeddings";
-const string EMBEDDING_MODEL = "embeddinggemma"; // or "mxbai-embed-large" 
 
+const string OLLAMA_URI = "http://localhost:11434/v1"; // http://localhost:8080/v1 for llama.cpp
+const string EMBEDDING_MODEL = "embeddinggemma";       // "EmbeddingGemma"; //"embeddinggemma-300M-BF16"; // "mxbai-embed-large" 
+const string MODEL = "gemma4:26b";                     // "Gemma4-26b-q4"; // "google_gemma-4-26B-A4B-it-Q4_K_M"; //"google_gemma-4-E4B-it-Q4_K_M"; // "gpt-oss:120b-cloud", // "qwen3.5:35b"
+const string APIKEY = "0";
 
-var ollamaUri = new Uri(OLLAMA_URI);
 
 // ollama provider
 
-string modelId = "gemma4:26b"; // "gpt-oss:120b-cloud", // "qwen3.5:35b"
-string apiKey = null; // or real key if you'd like to use cloud LLMs like 'gpt-oss:120b-cloud'
-var endpoint = new Uri(ollamaUri, "v1");
+var endpoint = new Uri(OLLAMA_URI);
 
-/*
-// alternative provider cerebras.ai
 
-string modelId = "qwen-3-235b-a22b-instruct-2507";
-string apiKey = "<your cerebras.ai api key>";
-var endpoint = new Uri("https://api.cerebras.ai/v1");
-*/
+// Load all knowledge base files
+
+var kb = new KnowledgeBase(KNOWLEDGEBASE_FOLDER, ["*.txt", "*.md", "*.html"]);
+await kb.Load();
+
+
+// Create embedding generator
+
+var clientOptions = new OpenAIClientOptions { Endpoint = endpoint };
+var openAIClient = new OpenAIClient(new ApiKeyCredential(APIKEY), clientOptions);
+
+var embeddingGenerator = openAIClient
+	.GetEmbeddingClient(EMBEDDING_MODEL)
+	.AsIEmbeddingGenerator();
+
 
 // Initialize RAG plugin
 
 var qdrantClient = new QdrantClient(QDRANT_HOST);
-var embeddingGenerator = new OllamaApiClient(ollamaUri, EMBEDDING_MODEL);
-var ragPlugin = new RAGPlugin(qdrantClient, embeddingGenerator, QDRANT_COLLECTION);
+var ragPlugin = new RAGPlugin(qdrantClient, embeddingGenerator, kb, QDRANT_COLLECTION);
+
 
 // Configure and build Semantic Kernel
 
 var builder = Kernel.CreateBuilder();
 
-builder.Services.AddOpenAIChatCompletion(modelId, endpoint, apiKey);
+builder.Services.AddOpenAIChatCompletion(MODEL, endpoint, APIKEY);
 builder.Plugins.AddFromObject(ragPlugin); 
 
 var kernel = builder.Build();
@@ -60,7 +73,7 @@ var kernel = builder.Build();
 Console.WriteLine("Chat with the AI. Type 'exit' to stop.");
 
 var history = new ChatHistory(
-@"You are a Q&A assistant. You have access to a RAG plugin that can retrieve relevant information from an external knowledge base.
+@"You are useful assistant. You have access to a RAG plugin that can retrieve relevant information from an external knowledge base.
 When answering the user:
 1. First, check whether the conversation history already contains enough information to answer the question.
 2. If the history does NOT contain the necessary information, you MUST call the RAG plugin to retrieve relevant context before answering.
@@ -87,6 +100,10 @@ while (true)
 
 	if (input.Trim().Equals("exit", StringComparison.CurrentCultureIgnoreCase)) 
 		break;
+
+	input += @"\nIf you need to retrieve information from the local knowledge base to answer this question, use the RAG plugin.
+If no relevant information is found, respond according your knowledges, but mark the answer.";
+//Do not answer the question without using the plugin if you determine that relevant information is not already present in the conversation history.";
 
 	history.AddUserMessage(input);
 	response.Clear();
