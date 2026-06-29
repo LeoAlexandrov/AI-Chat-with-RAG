@@ -1,7 +1,5 @@
 ﻿using System;
 using System.ClientModel;
-using System.Collections.Generic;
-using System.Linq;
 using System.Text;
 using Microsoft.Extensions.AI;
 using Microsoft.SemanticKernel;
@@ -12,22 +10,23 @@ using OpenAI;
 using Qdrant.Client;
 
 
-
 // setup console for multilanguage support
 
 Console.InputEncoding = Encoding.UTF8;
 Console.OutputEncoding = Encoding.UTF8;
+Console.ForegroundColor = ConsoleColor.White;
 
 
 // *** configuration ***
 
-const string KNOWLEDGEBASE_FOLDER = @"C:\Temp\Kb";
+const string KNOWLEDGEBASE_FOLDER = @"C:\Temp\kb";
 const string QDRANT_HOST = "minipc.local";             // "localhost" or IP/name of the machine running Qdrant
 const string QDRANT_COLLECTION = "local_embeddings";
 
-const string OLLAMA_URI = "http://localhost:11434/v1"; // http://localhost:8080/v1 for llama.cpp
-const string EMBEDDING_MODEL = "embeddinggemma";       // "EmbeddingGemma"; //"embeddinggemma-300M-BF16"; // "mxbai-embed-large" 
-const string MODEL = "gemma4:26b";                     // "Gemma4-26b-q4"; // "google_gemma-4-26B-A4B-it-Q4_K_M"; //"google_gemma-4-E4B-it-Q4_K_M"; // "gpt-oss:120b-cloud", // "qwen3.5:35b"
+const string OLLAMA_URI = "http://localhost:11434/v1"   ; // http://localhost:8080/v1 for llama.cpp
+const string EMBEDDING_URI = "http://localhost:11434/v1"; // http://localhost:8080/v1 for llama.cpp
+const string MODEL = "gemma4:26b";                        // "", "Gemma4-26b-q4"; "google_gemma-4-26B-A4B-it-Q4_K_M"; "google_gemma-4-E4B-it-Q4_K_M"; "gpt-oss:120b-cloud", "qwen3.5:35b"
+const string EMBEDDING_MODEL = "embeddinggemma";          // "", "EmbeddingGemma"; //"embeddinggemma-300M-BF16"; "qwen3-embedding:0.6b"  // "mxbai-embed-large" 
 const string APIKEY = "0";
 
 
@@ -44,7 +43,7 @@ await kb.Load();
 
 // Create embedding generator
 
-var clientOptions = new OpenAIClientOptions { Endpoint = endpoint };
+var clientOptions = new OpenAIClientOptions { Endpoint = new Uri(EMBEDDING_URI) };
 var openAIClient = new OpenAIClient(new ApiKeyCredential(APIKEY), clientOptions);
 
 var embeddingGenerator = openAIClient
@@ -55,7 +54,15 @@ var embeddingGenerator = openAIClient
 // Initialize RAG plugin
 
 var qdrantClient = new QdrantClient(QDRANT_HOST);
-var ragPlugin = new RAGPlugin(qdrantClient, embeddingGenerator, kb, QDRANT_COLLECTION);
+var ragPlugin = new RagPlugin(qdrantClient, embeddingGenerator, kb, QDRANT_COLLECTION);
+
+ragPlugin.OnContextReady += (object sender, string context) =>
+{
+	var color = Console.ForegroundColor;
+	Console.ForegroundColor = ConsoleColor.DarkGray;
+	Console.WriteLine(context);
+	Console.ForegroundColor = color;
+};
 
 
 // Configure and build Semantic Kernel
@@ -70,18 +77,28 @@ var kernel = builder.Build();
 
 // *** Start chat ***
 
-Console.WriteLine("Chat with the AI. Type 'exit' to stop.");
-
-var history = new ChatHistory(
-@"You are useful assistant. You have access to a RAG plugin that can retrieve relevant information from an external knowledge base.
+const string Default_System_Prompt = @"You are a C# developer. You have access to a RAG plugin that can retrieve relevant information from an external knowledge base.
 When answering the user:
 1. First, check whether the conversation history already contains enough information to answer the question.
 2. If the history does NOT contain the necessary information, you MUST call the RAG plugin to retrieve relevant context before answering.
 3. After retrieving context, use both the retrieved chunks and the conversation history to produce a complete and accurate answer.
 4. Chunks may overlap or be slightly out of order; combine them into a coherent narrative.
-5. If the user explicitly asks you to search, retrieve, or look something up, ALWAYS call the RAG plugin.",
-	AuthorRole.System);
+5. If the user explicitly asks you to search, retrieve, or look something up, ALWAYS call the RAG plugin.";
 
+Console.Write("Default system prompt: ");
+Console.ForegroundColor = ConsoleColor.DarkGray;
+Console.WriteLine(Default_System_Prompt);
+Console.ForegroundColor = ConsoleColor.White;
+Console.Write("Press ENTER to accept it or write yours: ");
+string Sys_Prompt = Console.ReadLine();
+
+if (string.IsNullOrEmpty(Sys_Prompt))
+	Sys_Prompt = Default_System_Prompt;
+
+
+Console.WriteLine("Chat with the AI. Type 'exit' to stop.");
+
+var history = new ChatHistory(Sys_Prompt, AuthorRole.System);
 
 OpenAIPromptExecutionSettings execSettings = new() { ToolCallBehavior = ToolCallBehavior.AutoInvokeKernelFunctions };
 
@@ -101,8 +118,15 @@ while (true)
 	if (input.Trim().Equals("exit", StringComparison.CurrentCultureIgnoreCase)) 
 		break;
 
-	input += @"\nIf you need to retrieve information from the local knowledge base to answer this question, use the RAG plugin.
-If no relevant information is found, respond according your knowledges, but mark the answer.";
+	if (input.StartsWith("@@"))
+	{
+		await ragPlugin.SearchKnowledgeBase(input[2..].Trim()).ContinueWith(t => Console.WriteLine($"\r\nRAG > {t.Result}"));
+		continue;
+	}
+
+
+//	input += @"\nIf you need to retrieve information from the local knowledge base to answer this question, use the RAG plugin.
+//If no relevant information is found, respond according your knowledges, but mark the answer.";
 //Do not answer the question without using the plugin if you determine that relevant information is not already present in the conversation history.";
 
 	history.AddUserMessage(input);
@@ -148,10 +172,6 @@ If no relevant information is found, respond according your knowledges, but mark
 	{
 		Console.ForegroundColor = ConsoleColor.Red;
 		Console.WriteLine($"\r\n{ex.Message}");
-	}
-	finally
-	{
-		Console.ForegroundColor = ConsoleColor.White;
 	}
 
 	Console.ForegroundColor = ConsoleColor.White;

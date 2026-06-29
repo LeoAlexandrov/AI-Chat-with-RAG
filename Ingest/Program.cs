@@ -12,16 +12,16 @@ using Qdrant.Client.Grpc;
 
 // Configuration
 
-const string KNOWLEDGEBASE_FOLDER = @"C:\Temp\Kb";
+const string KNOWLEDGEBASE_FOLDER = @"C:\Temp\kb";
 const string QDRANT_HOST = "minipc.local";             // "localhost" or IP/name of the machine running Qdrant
 const string QDRANT_COLLECTION = "local_embeddings";
 
 const string OLLAMA_URI = "http://localhost:11434/v1"; // http://localhost:8080/v1 for llama.cpp
-const string EMBEDDING_MODEL = "embeddinggemma";       // "EmbeddingGemma"; // "embeddinggemma-300M-BF16"; //"mxbai-embed-large"
+const string EMBEDDING_MODEL = "embeddinggemma";       // "", "EmbeddingGemma"; "qwen3-embedding:0.6b" "Qwen3Embedding" // "embeddinggemma-300M-BF16"; //"mxbai-embed-large"
 const string APIKEY = "0";
 
-const int VECTOR_DIMENSIONS = 768;                     // 768 for embeddinggemma, 1024 for mxbai-embed-large
-const int CHUNKS_BATCH = 4;                            // Number of chunks to process in parallel when generating embeddings
+const int VECTOR_DIMENSIONS = 768;                     // 768 for embeddinggemma, 1024 for qwen3-embedding:0.6b or mxbai-embed-large
+const int CHUNKS_BATCH = 12;                           // Number of chunks to process in parallel when generating embeddings
 
 
 // Initialize Qdrant Client and collection
@@ -63,7 +63,7 @@ var chunks = kb.GetChunks();
 for (int i = 0; i < chunks.Count; i += CHUNKS_BATCH)
 {
 	var batch = chunks.Skip(i).Take(CHUNKS_BATCH);
-	var embeddings = await embeddingGenerator.GenerateAsync(batch.Select(c => c.Content));
+	var embeddings = await embeddingGenerator.GenerateAsync(batch.Select(c => c.Content.Trim()));
 	var sparseVectors = batch.Select(chunk => kb.BM25Encode(chunk.Content)).ToArray();
 
 	var points = embeddings.Select((e, k) => new PointStruct()
@@ -74,7 +74,12 @@ for (int i = 0; i < chunks.Count; i += CHUNKS_BATCH)
 					["dense"] = e.Vector.ToArray(),
 					["sparse"] = (sparseVectors[k].Values, sparseVectors[k].Indices)
 				},
-				Payload = { ["content"] = chunks[i + k].Content, ["source"] = chunks[i + k].SourceFile }
+				Payload = { 
+					["content"] = chunks[i + k].Content,
+					["source"] = chunks[i + k].SourceFile,
+					["offset"] = chunks[i + k].Range.Start.Value,
+					["length"] = chunks[i + k].Range.End.Value - chunks[i + k].Range.Start.Value,
+				}
 			})
 		.ToArray();
 

@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Threading.Tasks;
 
 
@@ -12,6 +13,7 @@ public class KnowledgeBase(string kbFolder, string[] patterns)
 	const int CHUNK_SIZE = 1024;    // Characters per chunk
 	const int CHUNK_OVERLAP = 256;  // Overlap to keep context across boundaries
 
+	readonly Dictionary<string, long> FileSizes = [];
 	readonly Dictionary<string, int> Vocab = [];
 	readonly Dictionary<int, float> Idf = [];
 	readonly List<Chunk> Chunks = [];
@@ -21,11 +23,13 @@ public class KnowledgeBase(string kbFolder, string[] patterns)
 	float AvgDL;
 
 	public IReadOnlyList<Chunk> GetChunks() => Chunks;
+	public long GetFileSize(string kbFile) => FileSizes.TryGetValue(kbFile, out var fileSize) ? fileSize : 0;
 
 	public struct Chunk
 	{
 		public string Content { get; set; }
 		public string SourceFile { get; set; }
+		public Range Range { get; set; }
 	}
 
 	public struct BM25Encoding
@@ -43,12 +47,18 @@ public class KnowledgeBase(string kbFolder, string[] patterns)
 
 		// Read all knowledge files, split them to chunks
 
+		FileSizes.Clear();
 		Chunks.Clear();
 
 		foreach (var kbfile in kbfiles)
 		{
-			var text = await File.ReadAllTextAsync(kbfile);
-			Chunks.AddRange(TextSplitter.Split(text, CHUNK_SIZE, CHUNK_OVERLAP).Select(c => new Chunk() { Content = c, SourceFile = kbfile }));
+			var utf8text = await File.ReadAllBytesAsync(kbfile);
+
+			Chunks.AddRange(TextSplitter
+				.Split(utf8text, CHUNK_SIZE, CHUNK_OVERLAP)
+				.Select(r => new Chunk() { Content = Encoding.UTF8.GetString(utf8text[r]), SourceFile = kbfile, Range = r }));
+
+			FileSizes[kbfile] = utf8text.Length;
 		}
 
 
